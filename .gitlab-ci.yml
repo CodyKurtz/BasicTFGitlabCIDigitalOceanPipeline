@@ -1,0 +1,196 @@
+image: registry.gitlab.com/gitlab-org/terraform-images/stable:latest
+variables:
+  TF_ADDRESS: ${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${ENV}
+  # If your terraform files are in a subdirectory, set TF_ROOT accordingly
+  TF_ROOT: terraform
+
+cache:
+  key: example-production
+  paths:
+    - ${TF_ROOT}/.terraform
+
+before_script:
+  - cd ${TF_ROOT}
+
+stages:
+  - prepare
+  - validate
+  - build
+  - deploy-dev-infra
+  - deploy-prod-infra
+  - deploy-dev-app
+  - deploy-prod-app
+  - teardown-dev
+  - teardown-prod
+
+init-dev:
+  stage: prepare
+  script:
+    - gitlab-terraform init
+  variables:
+    ENV: dev
+
+init-prod:
+  stage: prepare
+  script:
+    - gitlab-terraform init
+  variables:
+    ENV: prod
+
+validate-dev:
+  stage: validate
+  script:
+    - gitlab-terraform validate
+  variables:
+    ENV: dev
+
+validate-prod:
+  stage: validate
+  script:
+    - gitlab-terraform validate
+  variables:
+    ENV: prod
+
+plan-dev:
+  stage: build
+  dependencies: []
+  script:
+    - gitlab-terraform plan -var-file=dev.tfvars
+    - gitlab-terraform plan-json
+  artifacts:
+    name: plan-dev
+    paths:
+      - ${TF_ROOT}/plan.cache
+    reports:
+      terraform: ${TF_ROOT}/plan.json
+  variables:
+    ENV: dev
+
+plan-prod:
+  stage: build
+  dependencies: []
+  script:
+    - gitlab-terraform plan -var-file=prod.tfvars
+    - gitlab-terraform plan-json
+  artifacts:
+    name: plan-prod
+    paths:
+      - ${TF_ROOT}/plan.cache
+    reports:
+      terraform: ${TF_ROOT}/plan.json
+  variables:
+    ENV: prod
+
+apply-dev:
+  stage: deploy-dev-infra
+  environment:
+    name: dev
+    action: start
+    on_stop: teardown-dev
+  script:
+    - gitlab-terraform apply
+    - gitlab-terraform output -json > dev_output.json
+  artifacts:
+    name: dev_output
+    paths:
+      - ${TF_ROOT}/dev_output.json
+  dependencies:
+    - plan-dev
+  when: manual
+  variables:
+    ENV: dev
+
+deploy-app-dev:
+  stage: deploy-dev-app
+  before_script:
+    - cd ansible
+    - apt-get update && apt-get install -y gnupg2 jq
+    - apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 93C4A3FD7BB9C367
+    - apt-get install ansible -y
+    - 'command -v ssh-agent >/dev/null || ( apt-get install openssh-client -y )'
+  script:
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - BASTION_HOST="$(cat ../"${TF_ROOT}"/"${ENV}"_output.json | jq -r '.bastion_servers_public.value | .[]')"
+    - export BASTION_HOST
+    - cat ../${TF_ROOT}/${ENV}_output.json | jq -r '.web_servers_private.value | .[]' > inventory
+    - chmod -R 755 .
+    - ansible-playbook -i inventory app-playbook.yml
+  needs: ["apply-dev"]
+  dependencies:
+    - apply-dev
+  variables:
+    ENV: dev
+    ANSIBLE_HOST_KEY_CHECKING: 'false'
+    ANSIBLE_FORCE_COLOR: 'true'
+  image: registry.hub.docker.com/library/ubuntu:latest
+
+apply-prod:
+  stage: deploy-prod-infra
+  environment:
+    name: prod
+    action: start
+    on_stop: teardown-prod
+  script:
+    - gitlab-terraform apply
+    - gitlab-terraform output -json > prod_output.json
+  artifacts:
+    name: prod_output
+    paths:
+      - ${TF_ROOT}/prod_output.json
+  dependencies:
+    - plan-prod
+  when: manual
+  variables:
+    ENV: prod
+  
+deploy-app-prod:
+  stage: deploy-prod-app
+  before_script:
+    - cd ansible
+    - apt-get update && apt-get install -y gnupg2 jq
+    - apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 93C4A3FD7BB9C367
+    - apt-get install ansible -y
+    - 'command -v ssh-agent >/dev/null || ( apt-get install openssh-client -y )'
+  script:
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - BASTION_HOST="$(cat ../"${TF_ROOT}"/"${ENV}"_output.json | jq -r '.bastion_servers_public.value | .[]')"
+    - export BASTION_HOST
+    - cat ../${TF_ROOT}/${ENV}_output.json | jq -r '.web_servers_private.value | .[]' > inventory
+    - chmod -R 755 .
+    - ansible-playbook -i inventory app-playbook.yml
+  needs: ["apply-prod"]
+  dependencies:
+    - apply-prod
+  variables:
+    ENV: prod
+    ANSIBLE_HOST_KEY_CHECKING: 'false'
+    ANSIBLE_FORCE_COLOR: 'true'
+  image: registry.hub.docker.com/library/ubuntu:latest
+
+teardown-dev:
+  stage: teardown-dev
+  environment:
+    name: dev
+    action: stop
+  script:
+    - gitlab-terraform plan -destroy -var-file=dev.tfvars
+    - gitlab-terraform destroy -var-file=dev.tfvars
+  dependencies: []
+  when: manual
+  variables:
+    ENV: dev
+
+teardown-prod:
+  stage: teardown-prod
+  environment:
+    name: prod
+    action: stop
+  script:
+    - gitlab-terraform plan -destroy -var-file=prod.tfvars
+    - gitlab-terraform destroy -var-file=prod.tfvars
+  dependencies: []
+  when: manual
+  variables:
+    ENV: prod

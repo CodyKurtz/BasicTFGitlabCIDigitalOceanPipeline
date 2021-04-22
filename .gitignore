@@ -1,0 +1,7 @@
+*/.terraform/*
+*.tfstate*
+*.out
+.terraform.lock.hcl
+**/token*
+**/.DS_Store
+**/ansible/inventory*

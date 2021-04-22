@@ -1,0 +1,47 @@
+---
+- name: Install Goal Tracker
+  hosts: all
+  remote_user: root
+  vars:
+    NODEJS_VERSION: "14"
+
+  tasks:  
+  - name: "Update Apt"
+    apt:
+      update_cache: yes
+
+  - name: "Upgrade Apt"
+    apt:
+      upgrade: yes
+      
+  - name: "Add nodejs apt key"
+    apt_key:
+      url: https://deb.nodesource.com/gpgkey/nodesource.gpg.key
+      state: present
+
+  - name: Install the nodejs LTS repos
+    apt_repository:
+      repo: "deb https://deb.nodesource.com/node_{{ NODEJS_VERSION }}.x {{ ansible_distribution_release }} main"
+      state: present
+      update_cache: yes
+
+  - name: "Install nodejs"
+    apt:
+      update_cache: yes
+      name: nodejs
+      state: present
+
+  - name: Install Angular.js
+    npm:
+      name: "@angular/cli"
+      global: yes
+      state: present
+
+  - name: NPM Update
+    command: 
+      cmd: npm update -g
+
+  - name: Creates App Directory
+    file:
+      path: /src/www
+      state: directory
